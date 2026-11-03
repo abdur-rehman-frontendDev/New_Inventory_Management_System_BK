@@ -3,15 +3,26 @@ const Product = require("../models/Productmodel");
 const Category = require("../models/Categorymodel");
 const AppError = require("../helpers/AppError");
 const asyncHandler = require("../helpers/asyncHandler");
-const { generateSKU, generateBarcode } = require("../libs/productCodeGenerator");
+const { reserveCodes } = require("../libs/productCodeGenerator");
 const columns = require("../helpers/excelColumns");
 const logActivity = require("../libs/logger");
 
-const norm = (v = "") => String(v ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+const norm = (v = "") =>
+  String(v ?? "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
 const str = (v) => String(v ?? "").trim();
-const isNonNegative = (v) => v !== "" && v !== null && !Number.isNaN(Number(v)) && Number(v) >= 0;
+const isNonNegative = (v) =>
+  v !== "" && v !== null && !Number.isNaN(Number(v)) && Number(v) >= 0;
 const MAX_ROWS = 5000;
-const REQUIRED = ["name", "Category", "purchasePrice", "sellingPrice", "quantity"];
+const REQUIRED = [
+  "name",
+  "Category",
+  "purchasePrice",
+  "sellingPrice",
+  "quantity",
+];
 
 /** Downloadable template so users don't have to guess the column names. */
 module.exports.template = asyncHandler(async (req, res) => {
@@ -34,8 +45,14 @@ module.exports.template = asyncHandler(async (req, res) => {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Products");
   const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
-  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", 'attachment; filename="products-template.xlsx"');
+  res.setHeader(
+    "Content-Type",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  );
+  res.setHeader(
+    "Content-Disposition",
+    'attachment; filename="products-template.xlsx"',
+  );
   res.send(buffer);
 });
 
@@ -45,21 +62,40 @@ module.exports.UploadProducts = asyncHandler(async (req, res) => {
   let rows;
   try {
     const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
-    rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: "" });
+    rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], {
+      defval: "",
+    });
   } catch (e) {
-    throw new AppError(400, "The file could not be read. Please upload a valid .xlsx, .xls or .csv file.");
+    throw new AppError(
+      400,
+      "The file could not be read. Please upload a valid .xlsx, .xls or .csv file.",
+    );
   }
 
   if (!rows.length) throw new AppError(400, "The file is empty.");
-  if (rows.length > MAX_ROWS) throw new AppError(400, `Too many rows (max ${MAX_ROWS} per upload).`);
+  if (rows.length > MAX_ROWS)
+    throw new AppError(400, `Too many rows (max ${MAX_ROWS} per upload).`);
 
-  const missingColumns = REQUIRED.filter((c) => !Object.keys(rows[0]).includes(c));
+  const missingColumns = REQUIRED.filter(
+    (c) => !Object.keys(rows[0]).includes(c),
+  );
   if (missingColumns.length) {
-    throw new AppError(400, `Required columns are missing: ${missingColumns.join(", ")}`, missingColumns);
+    throw new AppError(
+      400,
+      `Required columns are missing: ${missingColumns.join(", ")}`,
+      missingColumns,
+    );
   }
 
-  const categoryMap = new Map((await Category.find({}, "_id name").lean()).map((c) => [norm(c.name), c]));
-  const productMap = new Map((await Product.find({}, "_id name sku barcode").lean()).map((p) => [norm(p.name), p]));
+  const categoryMap = new Map(
+    (await Category.find({}, "_id name").lean()).map((c) => [norm(c.name), c]),
+  );
+  const productMap = new Map(
+    (await Product.find({}, "_id name sku barcode").lean()).map((p) => [
+      norm(p.name),
+      p,
+    ]),
+  );
 
   const inserts = [];
   const updates = [];
@@ -70,19 +106,34 @@ module.exports.UploadProducts = asyncHandler(async (req, res) => {
     const rowNo = index + 2;
     const name = str(row.name);
     const key = norm(name);
-    const skip = (reason) => skipped.push({ row: rowNo, product: name, reason });
+    const skip = (reason) =>
+      skipped.push({ row: rowNo, product: name, reason });
 
-    if (!name) { skip("Product name is missing"); continue; }
-    if (![row.purchasePrice, row.sellingPrice, row.quantity].every(isNonNegative)) {
-      skip("Purchase price, selling price and quantity must be numbers ≥ 0"); continue;
+    if (!name) {
+      skip("Product name is missing");
+      continue;
     }
-    if (seen.has(key)) { skip("Duplicate product in file"); continue; }
+    if (
+      ![row.purchasePrice, row.sellingPrice, row.quantity].every(isNonNegative)
+    ) {
+      skip("Purchase price, selling price and quantity must be numbers ≥ 0");
+      continue;
+    }
+    if (seen.has(key)) {
+      skip("Duplicate product in file");
+      continue;
+    }
     seen.add(key);
 
     const category = categoryMap.get(norm(row.Category));
-    if (!category) { skip(`Category '${str(row.Category)}' not found`); continue; }
+    if (!category) {
+      skip(`Category '${str(row.Category)}' not found`);
+      continue;
+    }
 
-    const status = ["Active", "Inactive"].includes(str(row.status)) ? str(row.status) : "Active";
+    const status = ["Active", "Inactive"].includes(str(row.status))
+      ? str(row.status)
+      : "Active";
     const fields = {
       Category: category._id,
       brand: str(row.brand),
@@ -91,7 +142,10 @@ module.exports.UploadProducts = asyncHandler(async (req, res) => {
       sellingPrice: Number(row.sellingPrice),
       Price: Number(row.sellingPrice),
       quantity: Number(row.quantity),
-      reorderLevel: isNonNegative(row.reorderLevel) && str(row.reorderLevel) !== "" ? Number(row.reorderLevel) : 5,
+      reorderLevel:
+        isNonNegative(row.reorderLevel) && str(row.reorderLevel) !== ""
+          ? Number(row.reorderLevel)
+          : 5,
       status,
       Description: str(row.Description),
       updatedBy: req.user._id,
@@ -102,27 +156,47 @@ module.exports.UploadProducts = asyncHandler(async (req, res) => {
       const set = { ...fields };
       if (str(row.sku)) set.sku = str(row.sku);
       if (str(row.barcode)) set.barcode = str(row.barcode);
-      updates.push({ updateOne: { filter: { _id: existing._id }, update: { $set: set } } });
+      updates.push({
+        updateOne: { filter: { _id: existing._id }, update: { $set: set } },
+      });
     } else {
       inserts.push({
         name,
-        sku: str(row.sku) || (await generateSKU()),
-        barcode: str(row.barcode) || (await generateBarcode()),
+        sku: str(row.sku),
+        barcode: str(row.barcode),
         ...fields,
         createdBy: req.user._id,
       });
     }
   }
 
+  // Generate any missing SKU / barcode for ALL new rows with two atomic calls in total.
+  const needSku = inserts.filter((r) => !r.sku).length;
+  const needBar = inserts.filter((r) => !r.barcode).length;
+  const codes = await reserveCodes(Math.max(needSku, needBar));
+  let si = 0,
+    bi = 0;
+  inserts.forEach((r) => {
+    if (!r.sku) r.sku = codes.skus[si++];
+    if (!r.barcode) r.barcode = codes.barcodes[bi++];
+  });
+
   let inserted = 0;
   let updated = 0;
   try {
-    if (inserts.length) inserted = (await Product.insertMany(inserts, { ordered: false })).length;
-    if (updates.length) updated = (await Product.bulkWrite(updates, { ordered: false })).matchedCount ?? updates.length;
+    if (inserts.length)
+      inserted = (await Product.insertMany(inserts, { ordered: false })).length;
+    if (updates.length)
+      updated =
+        (await Product.bulkWrite(updates, { ordered: false })).matchedCount ??
+        updates.length;
   } catch (err) {
     // Duplicate SKU/barcode etc. – report cleanly instead of a 500
     if (err.code === 11000 || err.writeErrors) {
-      throw new AppError(409, "Some rows use a SKU or barcode that already belongs to another product. Fix the duplicates and try again.");
+      throw new AppError(
+        409,
+        "Some rows use a SKU or barcode that already belongs to another product. Fix the duplicates and try again.",
+      );
     }
     throw err;
   }
@@ -138,7 +212,12 @@ module.exports.UploadProducts = asyncHandler(async (req, res) => {
   res.status(200).json({
     success: true,
     message: `Import finished: ${inserted} added, ${updated} updated, ${skipped.length} skipped.`,
-    summary: { totalRows: rows.length, inserted, updated, skipped: skipped.length },
+    summary: {
+      totalRows: rows.length,
+      inserted,
+      updated,
+      skipped: skipped.length,
+    },
     skippedProducts: skipped,
   });
 });
